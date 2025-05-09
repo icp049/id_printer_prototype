@@ -1,0 +1,151 @@
+import customtkinter as ctk
+import tkinter.messagebox as messagebox
+from barcode import get_barcode_class
+from barcode.writer import ImageWriter
+from PIL import Image, ImageTk, ImageDraw, ImageFont, ImageWin
+import win32print
+import win32ui
+from io import BytesIO
+import threading
+
+
+class BarcodePrinterApp:
+    def __init__(self, root):
+        ctk.set_appearance_mode("System")
+        ctk.set_default_color_theme("blue")
+
+        self.root = root
+        self.root.title("Codabar Barcode Printer")
+        self.root.geometry("700x750")
+
+        self.input_var = ctk.StringVar()
+        self.printer_var = ctk.StringVar()
+        self.print_mode = ctk.StringVar(value="single")
+
+        main_frame = ctk.CTkFrame(root)  # Make main frame responsive
+        main_frame.pack(pady=10, fill="both", expand=True)  # Allow resize with window
+
+        input_frame = ctk.CTkFrame(main_frame)
+        input_frame.pack(pady=10)
+
+        ctk.CTkLabel(input_frame, text="Enter Number:").grid(row=0, column=0, padx=10, pady=10)
+        self.entry = ctk.CTkEntry(input_frame, textvariable=self.input_var, width=200)
+        self.entry.grid(row=0, column=1, padx=10, pady=10)
+
+        ctk.CTkButton(input_frame, text="Generate Barcode", command=self.generate_barcode).grid(
+            row=1, column=0, columnspan=2, pady=10
+        )
+
+        self.canvas = ctk.CTkCanvas(main_frame, width=600, height=250, bg="white", highlightthickness=0)
+        self.canvas.pack_propagate(False)
+        self.canvas.pack(pady=10)
+
+        self.create_print_mode_selector(main_frame)
+
+        try:
+            server_name = r"\\printserver"
+            printers = win32print.EnumPrinters(win32print.PRINTER_ENUM_NAME, server_name, 2)
+
+            self.printer_map = {}
+            for p in printers:
+                full_name = p["pPrinterName"]
+                if "card printer" in full_name.lower():
+                    display_name = full_name.split("\\")[-1]
+                    self.printer_map[display_name] = full_name
+
+            printer_display_names = list(self.printer_map.keys())
+
+        except Exception as e:
+            messagebox.showerror("Printer Load Error", f"Could not load printers from printserver:\n{e}")
+            printer_display_names = []
+            self.printer_map = {}
+
+        printer_frame = ctk.CTkFrame(main_frame)
+        printer_frame.pack(pady=10)
+
+        ctk.CTkLabel(printer_frame, text="Select Printer:").pack()
+
+        dropdown_row = ctk.CTkFrame(printer_frame, fg_color="transparent")
+        dropdown_row.pack(pady=5, fill="x", padx=30)
+
+        self.printer_dropdown = ctk.CTkOptionMenu(
+            dropdown_row,
+            variable=self.printer_var,
+            values=printer_display_names,
+            command=self.update_printer_status,
+            width=280
+        )
+        self.printer_dropdown.pack(side="left", padx=(0, 20))
+
+        # Add status icon and label (colored and bold)
+        self.status_icon = ctk.CTkLabel(dropdown_row, text="●", font=("Arial", 18))
+        self.status_icon.pack(side="left")
+
+        self.status_text = ctk.CTkLabel(dropdown_row, text="Ready", font=("Arial", 14, "bold"))
+        self.status_text.pack(side="left")
+
+        if printer_display_names:
+            self.printer_var.set(printer_display_names[0])
+            self.update_printer_status(printer_display_names[0])
+
+        ctk.CTkButton(main_frame, text="Print", command=self.print_barcode, fg_color="#9622d4", width=200, height=50, font=("Arial", 16, "bold")).pack(pady=10)
+
+        self.progress_bar = ctk.CTkProgressBar(main_frame, mode="indeterminate", height=20)
+        self.progress_bar.pack(pady=(0, 20))
+        self.progress_bar.pack_forget()
+
+    def update_printer_status(self, selected_printer=None):
+        display_name = selected_printer or self.printer_var.get()
+        printer_name = self.printer_map.get(display_name, display_name)
+
+        status_flags = {
+            0x00000002: "Paused",
+            0x00000004: "Error",
+            0x00000008: "Deleting",
+            0x00000010: "Paper Jam",
+            0x00000020: "Paper Out",
+            0x00000040: "Manual Feed",
+            0x00000080: "Paper Problem",
+            0x00000100: "Offline",
+            0x00000200: "IO Active",
+            0x00000400: "Busy",
+            0x00000800: "Printing",
+            0x00001000: "Output Bin Full",
+            0x00002000: "Not Available",
+            0x00004000: "Waiting",
+            0x00008000: "Processing",
+            0x00010000: "Initializing",
+            0x00020000: "Warming Up",
+            0x00040000: "Toner Low",
+            0x00080000: "No Toner",
+            0x00100000: "Page Punt",
+            0x00200000: "User Intervention",
+            0x00400000: "Out of Memory",
+            0x00800000: "Door Open",
+            0x01000000: "Server Unknown",
+            0x02000000: "Power Save",
+        }
+
+        try:
+            hPrinter = win32print.OpenPrinter(printer_name)
+            info = win32print.GetPrinter(hPrinter, 2)
+            status_code = info['Status']
+            win32print.ClosePrinter(hPrinter)
+
+            status_list = [desc for code, desc in status_flags.items() if status_code & code]
+            status_text = ", ".join(status_list) if status_list else "Ready"
+
+            # Style based on status
+            if any(word in status_text.lower() for word in ["error", "offline", "jam", "punt"]):
+                color = "red"
+            elif any(word in status_text.lower() for word in ["paused", "waiting", "processing"]):
+                color = "orange"
+            else:
+                color = "green"
+
+            self.status_icon.configure(text="●", text_color=color)
+            self.status_text.configure(text=status_text, text_color=color)
+
+        except Exception:
+            self.status_icon.configure(text="●", text_color="gray")
+            self.status_text.configure(text="Unknown", text_color="gray")
